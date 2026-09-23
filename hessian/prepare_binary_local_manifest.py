@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--first-training-shard", type=int, default=1)
     parser.add_argument("--repo-id", default="liuhuohuo2/pick-a-pic-v2")
-    parser.add_argument("--revision", default="main")
+    parser.add_argument("--revision", default="f602d48")
     parser.add_argument("--output", type=pathlib.Path, required=True)
     return parser.parse_args()
 

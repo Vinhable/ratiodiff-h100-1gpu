@@ -60,14 +60,41 @@ Prepare these paths on the H100 host:
 - either three prompt JSON files (`pickapic_v2.json`, `partiprompt.json`,
   `hpdv2.json`) or a prior `full_scores.csv` containing the exact prompts.
 
+### Hugging Face dataset source
+
+The exact parquet source expected by this release is:
+
+- [liuhuohuo2/pick-a-pic-v2](https://huggingface.co/datasets/liuhuohuo2/pick-a-pic-v2)
+- pinned source revision: `f602d48`
+
+The complete repository is approximately 335 GB. For the 85k experiment it is
+enough to stage the first 100 training shards; the manifest builder skips shard 0,
+filters ties, and stops selecting files as soon as it has at least 85,000 binary
+pairs:
+
+```bash
+hf download liuhuohuo2/pick-a-pic-v2 \
+  --repo-type dataset \
+  --revision f602d48 \
+  --include 'data/train-000*.parquet' \
+  --local-dir /data/pickapic_v2_source
+```
+
+This command stores the parquet files under `/data/pickapic_v2_source/data`.
+If an equivalent materialized 85k subset is already available, reuse it instead
+of downloading the full dataset. Training never reads image URLs: `jpg_0` and
+`jpg_1` bytes must exist in the parquet files.
+
 Create the exact binary-row manifest. Ties are excluded and no network fallback
 is used during training:
 
 ```bash
 python hessian/prepare_binary_local_manifest.py \
-  --data-dir /data/pickapic_v2_85k \
+  --data-dir /data/pickapic_v2_source/data \
   --target-rows 85000 \
   --workers 16 \
+  --repo-id liuhuohuo2/pick-a-pic-v2 \
+  --revision f602d48 \
   --output /experiments/ratiodiff_h100/assets/binary_manifest.json
 ```
 
@@ -76,7 +103,7 @@ Bind the portable templates to the host paths:
 ```bash
 python hessian/prepare_ratiodiff_experiments.py \
   --output-dir /experiments/ratiodiff_h100/setup \
-  --data-dir /data/pickapic_v2_85k \
+  --data-dir /data/pickapic_v2_source/data \
   --manifest /experiments/ratiodiff_h100/assets/binary_manifest.json \
   --sdxl-model /models/stable-diffusion-xl-base-1.0 \
   --sdxl-vae /models/sdxl-vae-fp16-fix \
