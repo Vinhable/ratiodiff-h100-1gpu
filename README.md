@@ -54,11 +54,14 @@ Prepare these paths on the H100 host:
 
 - materialized Pick-a-Pic v2 parquet shards containing `jpg_0`, `jpg_1`,
   `label_0`, and `caption`;
-- SDXL base 1.0;
-- `madebyollin/sdxl-vae-fp16-fix`;
-- Stable Diffusion v1.5;
-- either three prompt JSON files (`pickapic_v2.json`, `partiprompt.json`,
-  `hpdv2.json`) or a prior `full_scores.csv` containing the exact prompts.
+- the binary manifest created below.
+
+The first pipeline launch now bootstraps the other assets automatically. It
+downloads SDXL base 1.0, `madebyollin/sdxl-vae-fp16-fix`, and Stable Diffusion
+v1.5. The three exact evaluation prompt files are bundled under
+`assets/eval_prompts`; their checksums are verified before the launcher creates
+`setup/sdxl.json` and `setup/sd15.json`. Existing complete model assets are
+reused, so an interrupted download can be resumed.
 
 ### Hugging Face dataset source
 
@@ -98,7 +101,8 @@ python hessian/prepare_binary_local_manifest.py \
   --output /experiments/ratiodiff_h100/assets/binary_manifest.json
 ```
 
-Bind the portable templates to the host paths:
+You may still bind the portable templates manually when models already exist at
+custom paths:
 
 ```bash
 python hessian/prepare_ratiodiff_experiments.py \
@@ -114,8 +118,8 @@ python hessian/prepare_ratiodiff_experiments.py \
 Use `--prompt-scores-csv /path/to/full_scores.csv` instead of `--prompt-dir`
 when recovering the exact established evaluation prompts.
 
-The output directory must be empty. The command creates `sdxl.json`, `sd15.json`,
-and absolute, separate work roots for both families.
+The command creates `sdxl.json`, `sd15.json`, and absolute, separate work roots
+for both families. Pass `--overwrite` to regenerate existing config files.
 
 ## 3. Tests and eight-step end-to-end pilot
 
@@ -124,6 +128,13 @@ Choose the physical H100 index with `GPU_ID` (default `0`):
 ```bash
 GPU_ID=0 bash scripts/run_all_h100.sh /experiments/ratiodiff_h100/setup pilot
 ```
+
+If the setup configs are absent, this command infers the parquet directory from
+`/experiments/ratiodiff_h100/assets/binary_manifest.json` and performs the
+bootstrap automatically. To use pre-staged assets, set `MODEL_ROOT`, or set the
+individual `SDXL_MODEL`, `SDXL_VAE`, `SD15_MODEL`, and `PROMPT_DIR` variables.
+Set `RATIODIFF_OFFLINE=1` to prohibit downloads and fail immediately if anything
+is missing.
 
 The pilot must complete training, inference, all five reported metrics, and report
 generation for SDXL and all three SD1.5 variants. Pilot outputs are never reused as

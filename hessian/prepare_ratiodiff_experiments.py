@@ -37,13 +37,16 @@ def main():
     p.add_argument("--sdxl-model", required=True)
     p.add_argument("--sdxl-vae", required=True)
     p.add_argument("--sd15-model", required=True)
+    p.add_argument("--overwrite", action="store_true",
+                   help="Replace only generated sdxl.json/sd15.json files")
     prompts = p.add_mutually_exclusive_group(required=True)
     prompts.add_argument("--prompt-dir")
     prompts.add_argument("--prompt-scores-csv", help="Reuse exact prompts, never training calibration scores")
     args = p.parse_args()
     dest = Path(args.output_dir).resolve()
-    if dest.exists() and any(dest.iterdir()):
-        raise FileExistsError("Choose an empty output directory; configurations are not overwritten")
+    generated = [dest/"sdxl.json", dest/"sd15.json"]
+    if not args.overwrite and any(path.exists() for path in generated):
+        raise FileExistsError("Configuration already exists; pass --overwrite to regenerate it")
     dest.mkdir(parents=True, exist_ok=True)
     prompt_dir = Path(args.prompt_dir).resolve() if args.prompt_dir else dest/"prompts"
     if args.prompt_scores_csv:

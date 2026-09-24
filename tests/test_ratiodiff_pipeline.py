@@ -10,6 +10,8 @@ import pytest
 from hessian.evaluate_ratiodiff_sdxl import prepare_prompts, validate_scores, DATASETS, METRICS
 from hessian.evaluate_standalone import _load_evaluator, merge_scores
 from hessian.prepare_ratiodiff_experiments import extract_prompts
+from hessian.bootstrap_h100_assets import ensure_prompts, model_ready
+import hessian.bootstrap_h100_assets as bootstrap
 from hessian.train_ratiodiff_sdxl import atomic_json
 
 
@@ -62,3 +64,37 @@ def test_eval_coverage_report_and_prompt_recovery(tmp_path):
     atomic_json(source/"pickapic_v2.json", [dict(id=0, prompt="different")])
     with pytest.raises(ValueError, match="changed prompts"):
         prepare_prompts(module, config, "full", False)
+
+
+def test_bootstrap_offline_checks(tmp_path):
+    prompts = tmp_path/"prompts"
+    ensure_prompts(prompts, offline=True)
+    assert set(path.name for path in prompts.glob("*.json")) == {
+        "pickapic_v2.json", "partiprompt.json", "hpdv2.json"
+    }
+    model = tmp_path/"model"
+    assert not model_ready(model)
+    (model/"unet").mkdir(parents=True)
+    (model/"model_index.json").write_text("{}")
+    (model/"unet"/"config.json").write_text("{}")
+    assert model_ready(model)
+
+
+def test_bootstrap_generates_both_configs_from_manifest(tmp_path, monkeypatch):
+    data = tmp_path/"data"
+    data.mkdir()
+    experiment = tmp_path/"experiment"
+    manifest = experiment/"assets/binary_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"local_data_dir": str(data)}))
+    monkeypatch.setattr(bootstrap, "ensure_prompts", lambda *args: None)
+    monkeypatch.setattr(bootstrap, "ensure_model", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sys, "argv", [
+        "bootstrap_h100_assets.py", "--setup-dir", str(experiment/"setup"),
+        "--offline",
+    ])
+    bootstrap.main()
+    for family in ("sdxl", "sd15"):
+        config = json.loads((experiment/"setup"/f"{family}.json").read_text())
+        assert config["data_dir"] == str(data.resolve())
+        assert config["manifest"] == str(manifest.resolve())
