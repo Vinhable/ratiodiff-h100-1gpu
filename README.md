@@ -63,6 +63,11 @@ v1.5. The three exact evaluation prompt files are bundled under
 `setup/sdxl.json` and `setup/sd15.json`. Existing complete model assets are
 reused, so an interrupted download can be resumed.
 
+Before GPU work starts, the launcher also prefetches PickScore, HPSv2, OpenCLIP,
+the aesthetic predictor, and ImageReward into one shared evaluation cache. This
+is required because training uses local-only diffusion assets and evaluation
+workers run offline. A completion marker makes subsequent launches immediate.
+
 ### Hugging Face dataset source
 
 The exact parquet source expected by this release is:
@@ -134,7 +139,8 @@ If the setup configs are absent, this command infers the parquet directory from
 bootstrap automatically. To use pre-staged assets, set `MODEL_ROOT`, or set the
 individual `SDXL_MODEL`, `SDXL_VAE`, `SD15_MODEL`, and `PROMPT_DIR` variables.
 Set `RATIODIFF_OFFLINE=1` to prohibit downloads and fail immediately if anything
-is missing.
+is missing. Override the shared reward cache with `RATIO_EVAL_CACHE_DIR`; the
+legacy `EVAL_CACHE` name is also accepted.
 
 The pilot must complete training, inference, all five reported metrics, and report
 generation for SDXL and all three SD1.5 variants. Pilot outputs are never reused as

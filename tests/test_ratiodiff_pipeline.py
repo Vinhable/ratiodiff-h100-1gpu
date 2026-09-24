@@ -14,6 +14,7 @@ from hessian.prepare_ratiodiff_experiments import extract_prompts
 from hessian.bootstrap_h100_assets import ensure_prompts, model_ready
 import hessian.bootstrap_h100_assets as bootstrap
 from hessian.run_ratiodiff_sdxl_matrix import run_group
+from hessian.prefetch_eval_assets import marker_valid, SCHEMA
 from hessian.train_ratiodiff_sdxl import atomic_json
 
 
@@ -107,3 +108,13 @@ def test_worker_failure_surfaces_stage_log_tail(tmp_path):
     command = [sys.executable, "-c", "print('actual root cause', flush=True); raise SystemExit(7)"]
     with pytest.raises(RuntimeError, match=r"(?s)exit=7.*actual root cause"):
         run_group([(command, dict(os.environ), log)])
+
+
+def test_eval_prefetch_marker_requires_all_files(tmp_path):
+    asset = tmp_path/"weight.bin"
+    asset.write_bytes(b"weight")
+    marker = tmp_path/"prefetch_complete.json"
+    marker.write_text(json.dumps({"schema": SCHEMA, "files": [str(asset)]}))
+    assert marker_valid(marker)
+    asset.unlink()
+    assert not marker_valid(marker)

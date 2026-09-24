@@ -21,6 +21,7 @@ export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-$HF_HOME/hub}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME}"
 export TORCH_HOME="${TORCH_HOME:-$SETUP_DIR/cache/torch}"
 export HPS_ROOT="${HPS_ROOT:-$SETUP_DIR/cache/hpsv2}"
+export RATIO_EVAL_CACHE_DIR="${RATIO_EVAL_CACHE_DIR:-${EVAL_CACHE:-$SETUP_DIR/cache/eval}}"
 
 SDXL_CONFIG="$SETUP_DIR/sdxl.json"
 SD15_CONFIG="$SETUP_DIR/sd15.json"
@@ -44,6 +45,14 @@ mkdir -p "$SETUP_DIR"
 
 exec 9>"$SETUP_DIR/h100-pipeline.lock"
 flock -n 9 || { echo "another H100 pipeline is already running" >&2; exit 1; }
+
+PREFETCH=("$PYTHON" "$ROOT/hessian/prefetch_eval_assets.py" --cache-root "$RATIO_EVAL_CACHE_DIR")
+if [[ "${RATIODIFF_OFFLINE:-0}" == "1" ]]; then
+  PREFETCH+=(--offline)
+  "${PREFETCH[@]}" | tee -a "$LOG"
+else
+  HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 "${PREFETCH[@]}" | tee -a "$LOG"
+fi
 
 "$PYTHON" "$ROOT/hessian/preflight_h100.py" \
   --sdxl-config "$SDXL_CONFIG" --sd15-config "$SD15_CONFIG" | tee -a "$LOG"
