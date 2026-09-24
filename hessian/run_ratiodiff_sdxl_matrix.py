@@ -26,12 +26,15 @@ def run_group(jobs):
     import time
     with ExitStack() as stack:
         processes = []
+        stage_logs = {}
         try:
             for command, env, log in jobs:
                 log.parent.mkdir(parents=True, exist_ok=True)
                 handle = stack.enter_context(log.open("a", encoding="utf-8"))
-                processes.append(subprocess.Popen(command, env=env, stdout=handle, stderr=subprocess.STDOUT,
-                                                  start_new_session=os.name == "posix"))
+                process = subprocess.Popen(command, env=env, stdout=handle, stderr=subprocess.STDOUT,
+                                           start_new_session=os.name == "posix")
+                processes.append(process)
+                stage_logs[process.pid] = log
             pending = list(processes)
             while pending:
                 for process in pending[:]:
@@ -39,7 +42,16 @@ def run_group(jobs):
                     if code is not None:
                         pending.remove(process)
                         if code:
-                            raise RuntimeError(f"Worker exit={code}; see stage logs")
+                            log = stage_logs[process.pid]
+                            try:
+                                lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+                                tail = "\n".join(lines[-80:])
+                            except OSError as error:
+                                tail = f"<could not read log: {error}>"
+                            raise RuntimeError(
+                                f"Worker pid={process.pid} exit={code}; log={log}\n"
+                                f"--- stage log tail ---\n{tail}\n--- end stage log tail ---"
+                            )
                 if pending:
                     time.sleep(1)
         finally:

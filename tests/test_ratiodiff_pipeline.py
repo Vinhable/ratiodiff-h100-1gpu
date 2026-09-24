@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from hessian.evaluate_standalone import _load_evaluator, merge_scores
 from hessian.prepare_ratiodiff_experiments import extract_prompts
 from hessian.bootstrap_h100_assets import ensure_prompts, model_ready
 import hessian.bootstrap_h100_assets as bootstrap
+from hessian.run_ratiodiff_sdxl_matrix import run_group
 from hessian.train_ratiodiff_sdxl import atomic_json
 
 
@@ -98,3 +100,10 @@ def test_bootstrap_generates_both_configs_from_manifest(tmp_path, monkeypatch):
         config = json.loads((experiment/"setup"/f"{family}.json").read_text())
         assert config["data_dir"] == str(data.resolve())
         assert config["manifest"] == str(manifest.resolve())
+
+
+def test_worker_failure_surfaces_stage_log_tail(tmp_path):
+    log = tmp_path/"worker.log"
+    command = [sys.executable, "-c", "print('actual root cause', flush=True); raise SystemExit(7)"]
+    with pytest.raises(RuntimeError, match=r"(?s)exit=7.*actual root cause"):
+        run_group([(command, dict(os.environ), log)])
