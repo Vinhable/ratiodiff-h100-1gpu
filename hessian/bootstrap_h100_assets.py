@@ -21,7 +21,6 @@ PROMPTS = {
 MODELS = {
     "sdxl": "stabilityai/stable-diffusion-xl-base-1.0",
     "sdxl_vae": "madebyollin/sdxl-vae-fp16-fix",
-    "sd15": "stable-diffusion-v1-5/stable-diffusion-v1-5",
 }
 
 
@@ -88,7 +87,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-root", type=Path)
     parser.add_argument("--sdxl-model", type=Path)
     parser.add_argument("--sdxl-vae", type=Path)
-    parser.add_argument("--sd15-model", type=Path)
     parser.add_argument("--prompt-dir", type=Path)
     parser.add_argument("--offline", action="store_true")
     return parser.parse_args()
@@ -112,19 +110,17 @@ def main() -> None:
     model_root = (args.model_root or experiment/"assets/models").resolve()
     sdxl_model = (args.sdxl_model or model_root/"stable-diffusion-xl-base-1.0").resolve()
     sdxl_vae = (args.sdxl_vae or model_root/"sdxl-vae-fp16-fix").resolve()
-    sd15_model = (args.sd15_model or model_root/"stable-diffusion-v1-5").resolve()
     prompt_dir = (args.prompt_dir or experiment/"assets/eval_prompts").resolve()
 
     ensure_prompts(prompt_dir, args.offline)
     ensure_model(MODELS["sdxl"], sdxl_model, args.offline)
     ensure_model(MODELS["sdxl_vae"], sdxl_vae, args.offline, vae_only=True)
-    ensure_model(MODELS["sd15"], sd15_model, args.offline)
 
     command = [
         sys.executable, str(Path(__file__).with_name("prepare_ratiodiff_experiments.py")),
         "--output-dir", str(setup_dir), "--data-dir", str(data_dir),
         "--manifest", str(manifest), "--sdxl-model", str(sdxl_model),
-        "--sdxl-vae", str(sdxl_vae), "--sd15-model", str(sd15_model),
+        "--sdxl-vae", str(sdxl_vae),
         "--prompt-dir", str(prompt_dir), "--overwrite",
     ]
     subprocess.run(command, check=True)

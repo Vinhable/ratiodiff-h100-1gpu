@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SDXL/SD1.5 generation with the existing five-metric paired evaluation."""
+"""SDXL generation with five-metric paired evaluation."""
 import argparse
 import csv
 import gc
@@ -39,19 +39,17 @@ def prepare_prompts(module, c, name, pilot):
 
 def generate(module, c, name, run, step, rank, world):
     import torch
-    from diffusers import (StableDiffusionXLPipeline, StableDiffusionPipeline,
-                          AutoencoderKL, UNet2DConditionModel, EulerDiscreteScheduler)
+    from diffusers import (StableDiffusionXLPipeline, AutoencoderKL,
+                           UNet2DConditionModel, EulerDiscreteScheduler)
     e = c["eval"]
     if e["scheduler"] != "EulerDiscreteScheduler":
         raise ValueError("Only the declared Euler protocol is implemented")
     local = c["local_files_only"]
-    is_xl = c["model_family"] == "sdxl"
-    pipeline_cls = StableDiffusionXLPipeline if is_xl else StableDiffusionPipeline
-    extras = {} if is_xl else dict(safety_checker=None, requires_safety_checker=False)
-    pipe = pipeline_cls.from_pretrained(c["model"], local_files_only=local, torch_dtype=torch.bfloat16, **extras)
-    vae_kwargs = {} if c["vae"] else {"subfolder": "vae"}
-    # BF16 VAE keeps pipeline latent/decoder dtypes consistent on both families.
-    pipe.vae = AutoencoderKL.from_pretrained(c["vae"] or c["model"], **vae_kwargs,
+    if c["model_family"] != "sdxl":
+        raise ValueError("This evaluator supports SDXL only")
+    pipe = StableDiffusionXLPipeline.from_pretrained(
+        c["model"], local_files_only=local, torch_dtype=torch.bfloat16)
+    pipe.vae = AutoencoderKL.from_pretrained(c["vae"],
                                            local_files_only=local, torch_dtype=torch.bfloat16)
     pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config)
     pipe.to("cuda")
@@ -149,8 +147,8 @@ def main():
     report = module.EVAL_ROOT / name / "report/REPORT.md"
     lines = report.read_text(encoding="utf-8").splitlines()
     for i, line in enumerate(lines):
-        if line.startswith("# SD1.5"):
-            lines[i] = f"# RatioDiff {c['model_family']} — {args.variant}" + (" (PILOT ONLY)" if args.pilot else "")
+        if i == 0 and line.startswith("#"):
+            lines[i] = "# RatioDiff SDXL" + (" (PILOT ONLY)" if args.pilot else "")
         elif line.startswith("Selected checkpoint:"):
             lines[i] = f"Selected checkpoint: final step {step}; fixed before evaluation."
         elif line.startswith("Generation:"):

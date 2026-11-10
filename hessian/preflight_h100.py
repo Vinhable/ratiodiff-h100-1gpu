@@ -12,7 +12,6 @@ from hessian.train_ratiodiff_sdxl import check_data, load_config, validate_confi
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--sdxl-config", required=True)
-    parser.add_argument("--sd15-config", required=True)
     args = parser.parse_args()
 
     import torch
@@ -27,18 +26,16 @@ def main():
     if not torch.cuda.is_bf16_supported():
         raise RuntimeError("BF16 is required")
 
-    configs = {}
-    for family, path in (("sdxl", args.sdxl_config), ("sd15", args.sd15_config)):
-        config = load_config(path)
-        steps, accumulation, _ = validate_config(config, 1)
-        manifest = check_data(config)
-        configs[family] = {
-            "micro_batch": config["micro_batch"],
-            "accumulation": accumulation,
-            "effective_batch": config["effective_batch"],
-            "optimizer_steps": steps,
-            "shards": len(manifest["files"]),
-        }
+    config = load_config(args.sdxl_config)
+    steps, accumulation, _ = validate_config(config, 1)
+    manifest = check_data(config)
+    configs = {"sdxl": {
+        "micro_batch": config["micro_batch"],
+        "accumulation": accumulation,
+        "effective_batch": config["effective_batch"],
+        "optimizer_steps": steps,
+        "shards": len(manifest["files"]),
+    }}
     print(json.dumps({
         "gpu": props.name,
         "vram_gib": round(memory_gib, 2),

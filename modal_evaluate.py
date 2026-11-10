@@ -1,4 +1,4 @@
-"""Paper-style evaluation for the SD1.5 Ratio Diffusion-DPO Modal run.
+"""Paper-style paired evaluation backend for the RatioDiff SDXL run.
 
 Stages are intentionally resumable. Images, raw per-sample scores, manifests,
 and reports are persisted in the ``dpo-ratio-eval`` Modal Volume.
@@ -21,8 +21,9 @@ from typing import Any, Iterable
 import modal
 
 
-APP_NAME = "dpo-ratio-sd15-eval"
-MODEL_ID = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+APP_NAME = "ratiodiff-sdxl-eval"
+MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
+VAE_ID = "madebyollin/sdxl-vae-fp16-fix"
 CACHE_ROOT = pathlib.Path("/cache")
 RUNS_ROOT = pathlib.Path("/runs")
 EVAL_ROOT = pathlib.Path("/eval")
@@ -215,16 +216,16 @@ def prepare_prompts(eval_name: str, pilot_count: int = 100, seed: int = 42) -> d
 
 def _load_pipeline():
     import torch
-    from diffusers import StableDiffusionPipeline
+    from diffusers import AutoencoderKL, StableDiffusionXLPipeline
 
-    pipe = StableDiffusionPipeline.from_pretrained(
+    pipe = StableDiffusionXLPipeline.from_pretrained(
         MODEL_ID,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         low_cpu_mem_usage=False,
         cache_dir=str(CACHE_ROOT / "huggingface"),
-        safety_checker=None,
-        requires_safety_checker=False,
     )
+    pipe.vae = AutoencoderKL.from_pretrained(
+        VAE_ID, torch_dtype=torch.bfloat16, cache_dir=str(CACHE_ROOT / "huggingface"))
     pipe.to("cuda")
     pipe.set_progress_bar_config(disable=True)
     pipe.unet.to(memory_format=torch.channels_last)
@@ -239,7 +240,7 @@ def _set_unet(pipe, train_run_name: str, model_label: str) -> None:
         unet = UNet2DConditionModel.from_pretrained(
             MODEL_ID,
             subfolder="unet",
-            torch_dtype=torch.float16,
+            torch_dtype=torch.bfloat16,
             low_cpu_mem_usage=False,
             cache_dir=str(CACHE_ROOT / "huggingface"),
         )
@@ -250,7 +251,7 @@ def _set_unet(pipe, train_run_name: str, model_label: str) -> None:
             raise FileNotFoundError(f"Missing checkpoint UNet: {unet_path}")
         unet = UNet2DConditionModel.from_pretrained(
             unet_path,
-            torch_dtype=torch.float16,
+            torch_dtype=torch.bfloat16,
             low_cpu_mem_usage=False,
         )
     pipe.unet = unet.to("cuda", memory_format=torch.channels_last)
@@ -281,14 +282,14 @@ def _generate_records(
         generators = [
             torch.Generator(device="cuda").manual_seed(seed + int(row["id"])) for row in pending
         ]
-        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16):
+        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
             images = pipe(
                 prompts,
                 num_inference_steps=inference_steps,
                 guidance_scale=guidance_scale,
                 generator=generators,
-                height=512,
-                width=512,
+                height=1024,
+                width=1024,
             ).images
         for row, image in zip(pending, images):
             path = _image_path(eval_name, dataset, model_label, row["id"])
@@ -304,7 +305,7 @@ def _generate_records(
 
 @app.function(
     image=inference_image,
-    gpu="A100-40GB",
+    gpu="H100",
     cpu=4,
     memory=32768,
     timeout=6 * 60 * 60,
@@ -315,7 +316,7 @@ def generate_pilot(
     train_run_name: str,
     checkpoints: list[int],
     seed: int = 42,
-    batch_size: int = 8,
+    batch_size: int = 1,
     inference_steps: int = 50,
     guidance_scale: float = 7.5,
 ) -> dict[str, Any]:
@@ -352,7 +353,7 @@ def generate_pilot(
 
 @app.function(
     image=inference_image,
-    gpu="A100-40GB",
+    gpu="H100",
     cpu=4,
     memory=32768,
     timeout=8 * 60 * 60,
@@ -363,7 +364,7 @@ def generate_full(
     train_run_name: str,
     selected_checkpoint: int,
     seed: int = 42,
-    batch_size: int = 8,
+    batch_size: int = 1,
     inference_steps: int = 50,
     guidance_scale: float = 7.5,
 ) -> dict[str, Any]:
@@ -833,7 +834,7 @@ def build_report(eval_name: str, selected_checkpoint: int) -> dict[str, Any]:
     _write_json(report_dir / "summary.json", summary_rows)
 
     lines = [
-        "# SD1.5 Ratio Diffusion-DPO — paper-style evaluation",
+        "# RatioDiff SDXL — paper-style evaluation",
         "",
         f"Selected checkpoint: `{selected_model}` (pilot PickScore on 100 held-out Pick-a-Pic v2 prompts).",
         "Generation: paired deterministic seeds (42 + prompt_id), 50 sampling steps, CFG 7.5, 512×512.",
@@ -868,8 +869,8 @@ def build_report(eval_name: str, selected_checkpoint: int) -> dict[str, Any]:
 @app.local_entrypoint()
 def main(
     stage: str,
-    eval_name: str = "sd15-ratio-paper-eval-20260806",
-    train_run_name: str = "sd15-ratio-pickscore-a100-1000-20260806",
+    eval_name: str = "ratiodiff-sdxl-paper-eval",
+    train_run_name: str = "ratiodiff-sdxl-h100-85k",
     checkpoints: str = "200,400,600,800,1000",
     selected_checkpoint: int = 0,
 ) -> None:

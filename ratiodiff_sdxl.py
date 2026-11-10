@@ -1,8 +1,9 @@
-"""RatioDiff specification (2026-09-22), independent of legacy Q3 losses.
+"""RatioDiff SDXL objective (2026-09-22), independent of legacy Q3 losses.
 
-Sum over latent dimensions, mean over pairs. SDXL disables winner auxiliary;
-SD1.5 ablations retain it. No log-ratio clamp, variance-floor endpoint, or
-gradient through confidence weights/budgets.
+Sum over latent dimensions, mean over pairs. The SDXL recipe uses adaptive
+reference regularization without an auxiliary winner-denoising term. There is no
+log-ratio clamp, variance-floor endpoint, or gradient through confidence
+weights/budgets.
 """
 from dataclasses import dataclass
 import math
@@ -10,9 +11,6 @@ import math
 import torch
 from torch import nn
 import torch.nn.functional as F
-
-
-VARIANTS = ("full", "no_ratio_correction", "fixed_regularization")
 
 
 @dataclass(frozen=True)
@@ -27,12 +25,6 @@ class LossConfig:
     w_min: float = 0.05
     label_smoothing: float = 0.05
     lambda_conf: float = 1.0
-    winner_enabled: bool = False
-    rho_win: float = 0.0
-    beta_D: float = 0.01
-    T_D: float = 1.0
-    mu: float = 0.25
-
     def __post_init__(self):
         if not all(math.isfinite(v) for v in vars(self).values()):
             raise ValueError("Non-finite loss configuration")
@@ -42,10 +34,6 @@ class LossConfig:
         if not (0 <= self.rho_ref < 1 and 0 < self.w_min < 1
                 and 0 <= self.label_smoothing < 1):
             raise ValueError("Invalid budget/weight/smoothing")
-        if self.rho_win < 0 or not 0 <= self.mu < 1 or min(self.beta_D, self.T_D) <= 0:
-            raise ValueError("Invalid winner auxiliary configuration")
-        if not self.winner_enabled and self.rho_win != 0:
-            raise ValueError("Disabled winner auxiliary requires rho_win=0")
 
 
 def sum_sq(x):
@@ -116,10 +104,7 @@ def normalized_weights(logits, w_min, global_mean=True):
     return raw / (totals[0] / totals[1])
 
 
-def denoiser_loss(pw, pl, rw, rl, nw, nl, omega, weights, config,
-                  variant="full", fixed_ref=None, fixed_win=None):
-    if variant not in VARIANTS:
-        raise ValueError(variant)
+def denoiser_loss(pw, pl, rw, rl, nw, nl, omega, weights, config):
     c = config
     pw, pl = pw.float(), pl.float()
     rw, rl = rw.detach().float(), rl.detach().float()
@@ -131,57 +116,25 @@ def denoiser_loss(pw, pl, rw, rl, nw, nl, omega, weights, config,
     if not (torch.isfinite(om).all() and torch.isfinite(w).all()
             and (om > 0).all() and (w > 0).all()):
         raise ValueError("Invalid timestep coefficient or weight")
-    full_margin = 2 * om * (sum_dot(el, dl) - sum_dot(ew, dw))
-    no_corr_margin = full_margin + om * (sum_sq(dw) - sum_sq(dl))
-    margin = no_corr_margin if variant == "no_ratio_correction" else full_margin
-    norm2 = (sum_sq(dw - ew) + sum_sq(dl - el) if variant == "no_ratio_correction"
-             else sum_sq(ew) + sum_sq(el))
+    margin = 2 * om * (sum_dot(el, dl) - sum_dot(ew, dw))
+    norm2 = sum_sq(ew) + sum_sq(el)
     z = c.beta_R * margin
     pos, neg = (1 + c.lambda_B) * z, -c.lambda_B * z
     pref = w * c.gamma_R / (2 * c.beta_R) * (
         torch.expm1(pos) / (1 + c.lambda_B) - torch.expm1(neg) / c.lambda_B)
     displacement2 = sum_sq(dw) + sum_sq(dl)
     ref_loss = om * displacement2
-    if c.winner_enabled:
-        with torch.no_grad():
-            gap_theta = sum_sq(ew-dw) - sum_sq(el-dl)
-            gap_ref = sum_sq(ew) - sum_sq(el)
-            p_D = torch.sigmoid(-c.beta_D / (2*c.T_D) * (gap_theta-gap_ref))
-            kappa = c.mu * (1-p_D)
-        shape = (-1,) + (1,) * (dw.ndim-1)
-        win_loss = sum_sq((1-kappa).reshape(shape)*dw-ew)
-    else:
-        if fixed_win not in (None, 0):
-            raise ValueError("Disabled winner auxiliary requires fixed_win=0")
-        kappa, win_loss = torch.zeros_like(om), torch.zeros_like(om)
     with torch.no_grad():
         gp = w * c.gamma_R * om * (pos.detach().exp() + neg.detach().exp()) * norm2.detach().sqrt()
         gr = 2 * om * displacement2.detach().sqrt()
-        gw = 2 * (1-kappa) * win_loss.detach().sqrt()
-        if variant == "fixed_regularization":
-            if fixed_ref is None or not math.isfinite(fixed_ref) or fixed_ref < 0:
-                raise ValueError("Provide a calibrated finite fixed_ref")
-            ar = torch.full_like(om, fixed_ref)
-            if c.winner_enabled:
-                if fixed_win is None or not math.isfinite(fixed_win) or fixed_win < 0:
-                    raise ValueError("Provide a calibrated finite fixed_win")
-                aw = torch.full_like(om, fixed_win)
-            else:
-                aw = torch.zeros_like(om)
-        else:
-            ar = (c.rho_ref * gp / gr.clamp_min(c.eps_g)).clamp_max(c.a_max)
-            aw = ((c.rho_win * gp / gw.clamp_min(c.eps_g)).clamp_max(c.a_max)
-                  if c.winner_enabled else torch.zeros_like(om))
-    reg = ar * ref_loss + aw * win_loss
+        ar = (c.rho_ref * gp / gr.clamp_min(c.eps_g)).clamp_max(c.a_max)
+    reg = ar * ref_loss
     total = pref + reg
-    if not all(torch.isfinite(v).all().item() for v in (total, gp, gr, ar, gw, aw)):
+    if not all(torch.isfinite(v).all().item() for v in (total, gp, gr, ar)):
         raise FloatingPointError("Non-finite RatioDiff objective/budget: inspect log_ratio and scales; no clamp applied")
-    stats = dict(margin=margin, margin_full=full_margin, margin_no_correction=no_corr_margin,
-                 log_ratio=z, exp_arg_pos=pos, exp_arg_neg=neg, pref=pref, ref_loss=ref_loss,
+    stats = dict(margin=margin, log_ratio=z, exp_arg_pos=pos, exp_arg_neg=neg,
+                 pref=pref, ref_loss=ref_loss,
                  G_pref=gp, G_ref=gr, a_ref=ar, ref_budget_used=ar * gr,
-                 G_win=gw, a_win=aw, win_loss=win_loss, kappa=kappa,
-                 win_budget_used=aw*gw,
-                 win_budget_violation=(aw*gw > c.rho_win*gp+1e-6).float(),
                  displacement2=displacement2, weight=w,
                  winner_error_delta=sum_sq(ew - dw) - sum_sq(ew),
                  loser_error_delta=sum_sq(el - dl) - sum_sq(el),

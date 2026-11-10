@@ -195,7 +195,7 @@ def main() -> None:
     parser.add_argument("--project-root", type=pathlib.Path, required=True)
     parser.add_argument("--work-root", type=pathlib.Path, required=True)
     parser.add_argument("--eval-name", required=True)
-    parser.add_argument("--train-run-name", default="ratio_sd15_85k_4xa100_full")
+    parser.add_argument("--train-run-name", default="ratiodiff_sdxl_h100_85k")
     parser.add_argument("--scope", choices=["pilot", "full"], default="pilot")
     parser.add_argument("--checkpoints", default="100,200,300,400,500,600,665")
     parser.add_argument("--selected-checkpoint", type=int, default=0)

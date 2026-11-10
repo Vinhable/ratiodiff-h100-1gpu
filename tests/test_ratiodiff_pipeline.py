@@ -20,14 +20,12 @@ from hessian.train_ratiodiff_sdxl import atomic_json
 
 def test_plan_is_backbone_specific():
     root = Path(__file__).resolve().parents[1]/"hessian"
-    for filename, family, count in (("run_ratiodiff_sdxl_matrix.py", "sdxl", 1),
-                                     ("run_ratiodiff_sd15_ablations.py", "sd15", 3)):
-        result = subprocess.run([sys.executable, "-B", str(root/filename)], check=True,
-                                capture_output=True, text=True)
-        plan = json.loads(result.stdout)
-        assert plan["model_family"] == family and len(plan["variants"]) == count
-        assert plan["optimizer_steps_per_run"] == 1329
-        assert "PLAN ONLY" in plan["mode"]
+    result = subprocess.run([sys.executable, "-B", str(root/"run_ratiodiff_sdxl_matrix.py")],
+                            check=True, capture_output=True, text=True)
+    plan = json.loads(result.stdout)
+    assert plan["model_family"] == "sdxl" and plan["variants"] == ["full"]
+    assert plan["optimizer_steps_per_run"] == 1329
+    assert "PLAN ONLY" in plan["mode"]
 
 
 def test_eval_coverage_report_and_prompt_recovery(tmp_path):
@@ -83,7 +81,7 @@ def test_bootstrap_offline_checks(tmp_path):
     assert model_ready(model)
 
 
-def test_bootstrap_generates_both_configs_from_manifest(tmp_path, monkeypatch):
+def test_bootstrap_generates_sdxl_config_from_manifest(tmp_path, monkeypatch):
     data = tmp_path/"data"
     data.mkdir()
     experiment = tmp_path/"experiment"
@@ -97,10 +95,11 @@ def test_bootstrap_generates_both_configs_from_manifest(tmp_path, monkeypatch):
         "--offline",
     ])
     bootstrap.main()
-    for family in ("sdxl", "sd15"):
-        config = json.loads((experiment/"setup"/f"{family}.json").read_text())
-        assert config["data_dir"] == str(data.resolve())
-        assert config["manifest"] == str(manifest.resolve())
+    config = json.loads((experiment/"setup/sdxl.json").read_text())
+    assert config["model_family"] == "sdxl"
+    assert config["data_dir"] == str(data.resolve())
+    assert config["manifest"] == str(manifest.resolve())
+    assert set(path.name for path in (experiment/"setup").glob("*.json")) == {"sdxl.json"}
 
 
 def test_worker_failure_surfaces_stage_log_tail(tmp_path):

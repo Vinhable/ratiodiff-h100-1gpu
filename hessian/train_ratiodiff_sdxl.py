@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared full-denoiser trainer: SDXL recipe and SD1.5 ablations. No CPU offload.
+"""RatioDiff full-denoiser SDXL trainer. No CPU offload.
 
 Launch through torchrun; Accelerate handles DDP and portable state checkpoints.
 The old train.py is intentionally unchanged. See RATIO_DIFF_SDXL_READY.md.
@@ -57,15 +57,14 @@ def load_config(path, pilot=False):
 
 
 def validate_config(c, world_size):
-    family = c.get("model_family")
-    if family not in ("sdxl", "sd15") or world_size < 1:
-        raise ValueError("model_family must be sd15 or sdxl; world_size must be positive")
-    expected = ["full"] if family == "sdxl" else ["full", "no_ratio_correction", "fixed_regularization"]
-    if c.get("variants") != expected:
-        raise ValueError("This experiment requires SDXL full only, SD1.5 full + two ablations")
-    winner = c["loss"].get("winner_enabled", False)
-    if (family == "sdxl" and winner) or (family == "sd15" and not winner):
-        raise ValueError("SDXL disables winner auxiliary; SD1.5 ablations retain it")
+    if c.get("model_family") != "sdxl" or world_size < 1:
+        raise ValueError("This release supports SDXL only; world_size must be positive")
+    if c.get("variants") != ["full"]:
+        raise ValueError("The SDXL release supports only the full RatioDiff recipe")
+    expected_loss = {"beta_R", "gamma_R", "lambda_B", "rho_ref", "a_max", "eps_g",
+                     "w_min", "label_smoothing", "lambda_conf"}
+    if set(c["loss"]) != expected_loss:
+        raise ValueError("Loss config must match the SDXL RatioDiff recipe exactly")
     for name in ("samples", "epochs", "effective_batch", "micro_batch", "resolution",
                  "vae_batch_size", "log_every", "checkpoint_steps"):
         if not isinstance(c[name], int) or c[name] <= 0:
@@ -151,7 +150,7 @@ def collate(rows, resolution):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
-    parser.add_argument("--variant", choices=("full", "no_ratio_correction", "fixed_regularization"), default="full")
+    parser.add_argument("--variant", choices=("full",), default="full")
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--resume", help="Own complete checkpoint directory; topology must match")
     parser.add_argument("--preflight", action="store_true")
@@ -159,9 +158,8 @@ def main():
     c = load_config(args.config, args.pilot)
     world = int(os.environ.get("WORLD_SIZE", "1"))
     steps, accumulation, epoch_steps = validate_config(c, world)
-    if args.variant not in c["variants"]:
-        raise ValueError("Variant is not part of this backbone's experiment")
-    is_xl = c["model_family"] == "sdxl"
+    if args.variant != "full":
+        raise ValueError("Only the SDXL full recipe is supported")
     from ratiodiff_sdxl import (LossConfig, ConfidenceHead, Calibration, vp_omega,
                                as_epsilon, confidence_features, normalized_weights,
                                confidence_loss, denoiser_loss)
@@ -175,28 +173,16 @@ def main():
     root = Path(c["work_root"]).resolve() / ("pilot" if args.pilot else "full")
     out = root / "runs" / args.variant
     calibration_path = root / "runs" / "full" / "calibration.json"
-    fixed_ref = fixed_win = None
-    if args.variant == "fixed_regularization":
-        cal = json.loads(calibration_path.read_text(encoding="utf-8"))
-        if cal["recipe_id"] != signature or cal["variant"] != "full":
-            raise ValueError("Calibration from a different recipe is not a controlled ablation")
-        fixed_ref = cal["fixed_ref"]
-        fixed_win = cal["fixed_win"]
-        if cal["world_size"] != world:
-            raise ValueError("Calibration DDP topology differs from ablation")
-        if not math.isfinite(fixed_ref) or fixed_ref < 0:
-            raise ValueError("Invalid calibration coefficient")
     print(json.dumps(dict(variant=args.variant, optimizer_steps=steps,
                           effective_batch=c["effective_batch"], accumulation=accumulation,
-                          recipe_id=signature, local_shards=len(manifest["files"]),
-                          fixed_ref=fixed_ref)), flush=True)
+                          recipe_id=signature, local_shards=len(manifest["files"]))), flush=True)
     if args.preflight:
         return
     import torch
     from functools import partial
     from accelerate import Accelerator
     from accelerate.utils import set_seed
-    from diffusers import StableDiffusionXLPipeline, StableDiffusionPipeline, DDPMScheduler, AutoencoderKL
+    from diffusers import StableDiffusionXLPipeline, DDPMScheduler, AutoencoderKL
     from hessian.streaming_pickapic import PickAPicStreamingDataset
     accelerator = Accelerator(mixed_precision="bf16")
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
@@ -216,10 +202,9 @@ def main():
         out.mkdir(parents=True, exist_ok=True)
     accelerator.wait_for_everyone()
     resolved = dict(c, variant=args.variant, recipe_id=signature, world_size=world,
-                    accumulation=accumulation, optimizer_steps=steps, fixed_ref=fixed_ref,
-                    fixed_win=fixed_win,
+                    accumulation=accumulation, optimizer_steps=steps,
                     reduction="latent_sum_pair_mean", weight_normalization="global_microbatch_mean",
-                    rho_win=loss_config.rho_win, budget="per_pair_epsilon_output", optimizer="AdamW",
+                    budget="per_pair_epsilon_output", optimizer="AdamW",
                     mixed_precision="bf16", cpu_offload=False)
     if args.resume:
         checkpoint = Path(args.resume).resolve()
@@ -234,10 +219,8 @@ def main():
     set_seed(c["seed"])
     torch.backends.cuda.matmul.allow_tf32 = True
     local = c["local_files_only"]
-    pipeline_cls = StableDiffusionXLPipeline if is_xl else StableDiffusionPipeline
-    extras = {} if is_xl else dict(safety_checker=None, requires_safety_checker=False)
-    pipe = pipeline_cls.from_pretrained(c["model"], torch_dtype=torch.bfloat16,
-                                        local_files_only=local, **extras)
+    pipe = StableDiffusionXLPipeline.from_pretrained(
+        c["model"], torch_dtype=torch.bfloat16, local_files_only=local)
     # Separate FP32 policy/master weights; reference remains frozen BF16.
     from diffusers import UNet2DConditionModel
     unet = UNet2DConditionModel.from_pretrained(c["model"], subfolder="unet",
@@ -249,11 +232,10 @@ def main():
         if isinstance(module, torch.nn.Dropout):
             module.p = 0.0
     reference = pipe.unet.requires_grad_(False).eval().to(device)
-    vae_kwargs = {} if c["vae"] else {"subfolder": "vae"}
-    vae = AutoencoderKL.from_pretrained(c["vae"] or c["model"], **vae_kwargs, local_files_only=local,
+    vae = AutoencoderKL.from_pretrained(c["vae"], local_files_only=local,
                                        torch_dtype=torch.float32).requires_grad_(False).eval().to(device)
-    text_encoders = [pipe.text_encoder, pipe.text_encoder_2] if is_xl else [pipe.text_encoder]
-    tokenizers = [pipe.tokenizer, pipe.tokenizer_2] if is_xl else [pipe.tokenizer]
+    text_encoders = [pipe.text_encoder, pipe.text_encoder_2]
+    tokenizers = [pipe.tokenizer, pipe.tokenizer_2]
     for encoder in text_encoders:
         encoder.requires_grad_(False).eval().to(device)
     del pipe
@@ -269,8 +251,7 @@ def main():
     lr_schedule = torch.optim.lr_scheduler.LambdaLR(opt, lr_factor)
     unet, head, opt, head_opt = accelerator.prepare(unet, head, opt, head_opt)
     calibration = Calibration()
-    win_calibration = Calibration()
-    accelerator.register_for_checkpointing(lr_schedule, calibration, win_calibration)
+    accelerator.register_for_checkpointing(lr_schedule, calibration)
     # Independent corruption/latent RNG from model and shard order.
     corruption = torch.Generator(device=device).manual_seed(c["seed"] + 100003 + rank)
     latent_rng = torch.Generator(device=device).manual_seed(c["seed"] + 200003 + rank)
@@ -301,8 +282,6 @@ def main():
             atomic_json(calibration_path, dict(variant="full", recipe_id=signature,
                         world_size=world, model_family=c["model_family"],
                         fixed_ref=calibration.coefficient(),
-                        fixed_win=win_calibration.coefficient() if loss_config.winner_enabled else 0,
-                        win_sums=win_calibration.state_dict(),
                         window=[c["calibration_start"], c["calibration_end"]],
                         precision="float64_sums_global_allreduce", **calibration.state_dict()))
 
@@ -337,10 +316,10 @@ def main():
                     ids = tokenizer(captions, padding="max_length", max_length=tokenizer.model_max_length,
                                     truncation=True, return_tensors="pt").input_ids.to(device)
                     enc = encoder(ids, output_hidden_states=True)
-                    embeddings.append(enc.hidden_states[-2] if is_xl else enc.last_hidden_state)
+                    embeddings.append(enc.hidden_states[-2])
                 context = torch.cat(embeddings, dim=-1).repeat(2, 1, 1)
-                conditions = (dict(text_embeds=enc.text_embeds.repeat(2, 1),
-                                  time_ids=time_ids.to(device, dtype=torch.bfloat16)) if is_xl else None)
+                conditions = dict(text_embeds=enc.text_embeds.repeat(2, 1),
+                                  time_ids=time_ids.to(device, dtype=torch.bfloat16))
                 pair_t = valid_t[torch.randint(len(valid_t), (len(captions),), device=device, generator=corruption)]
                 t = pair_t.repeat(2)
                 noise = torch.randn(latents.shape, device=device, dtype=torch.float32, generator=corruption)
@@ -360,15 +339,13 @@ def main():
                     logits = head(features)
                     weights = normalized_weights(logits, loss_config.w_min)
                     policy_loss, stats = denoiser_loss(*pred.chunk(2), rw, rl, nw, nl,
-                        omega[pair_t], weights, loss_config, args.variant, fixed_ref, fixed_win)
+                        omega[pair_t], weights, loss_config)
                     conf = confidence_loss(logits, rw, rl, nw, nl, loss_config)
                     loss = policy_loss + loss_config.lambda_conf * conf
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Nonfinite total loss")
-                if args.variant == "full" and c["calibration_start"] <= step + 1 <= c["calibration_end"]:
+                if c["calibration_start"] <= step + 1 <= c["calibration_end"]:
                     calibration.update(stats)
-                    if loss_config.winner_enabled:
-                        win_calibration.update(stats, "win")
                 accelerator.backward(loss / accumulation)
             if sync:
                 grad = accelerator.clip_grad_norm_(unet.parameters(), c["max_grad_norm"])
@@ -395,7 +372,7 @@ def main():
                             log.write(line + "\n")
                         print(f"step={step}/{steps} loss={loss.item():.6g} conf={conf.item():.4g} "
                               f"z_q={record['log_ratio']['quantiles']} peakGB={record['cuda_peak_allocated_gb']:.2f}", flush=True)
-                if args.variant == "full" and step == c["calibration_end"]:
+                if step == c["calibration_end"]:
                     save_calibration()
                 if step % c["checkpoint_steps"] == 0 or step == steps:
                     save_state()
@@ -407,8 +384,7 @@ def main():
     if accelerator.is_main_process:
         accelerator.unwrap_model(unet).save_pretrained(out / "unet", safe_serialization=True)
         torch.save(accelerator.unwrap_model(head).state_dict(), out / "confidence_head.pt")
-        if args.variant == "full":
-            save_calibration()
+        save_calibration()
         atomic_json(out / "completed.json", dict(step=step, recipe_id=signature, variant=args.variant))
     accelerator.wait_for_everyone()
     accelerator.end_training()

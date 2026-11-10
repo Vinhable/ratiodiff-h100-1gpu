@@ -36,15 +36,14 @@ def main():
     p.add_argument("--manifest", required=True)
     p.add_argument("--sdxl-model", required=True)
     p.add_argument("--sdxl-vae", required=True)
-    p.add_argument("--sd15-model", required=True)
     p.add_argument("--overwrite", action="store_true",
-                   help="Replace only generated sdxl.json/sd15.json files")
+                   help="Replace only the generated sdxl.json file")
     prompts = p.add_mutually_exclusive_group(required=True)
     prompts.add_argument("--prompt-dir")
     prompts.add_argument("--prompt-scores-csv", help="Reuse exact prompts, never training calibration scores")
     args = p.parse_args()
     dest = Path(args.output_dir).resolve()
-    generated = [dest/"sdxl.json", dest/"sd15.json"]
+    generated = [dest/"sdxl.json"]
     if not args.overwrite and any(path.exists() for path in generated):
         raise FileExistsError("Configuration already exists; pass --overwrite to regenerate it")
     dest.mkdir(parents=True, exist_ok=True)
@@ -54,15 +53,12 @@ def main():
             atomic_json(prompt_dir/f"{name}.json", rows)
         atomic_json(prompt_dir/"source.json", dict(source=str(Path(args.prompt_scores_csv).resolve()),
                                                   sha256=digest(args.prompt_scores_csv)))
-    for family, filename in (("sdxl", "ratiodiff_xl_h100_1gpu.json"),
-                             ("sd15", "ratiodiff_sd15_h100_1gpu.json")):
-        c = json.loads(Path(__file__).with_name(filename).read_text())
-        c.update(data_dir=str(Path(args.data_dir).resolve()), manifest=str(Path(args.manifest).resolve()),
-                 model=str(Path(args.sdxl_model if family == "sdxl" else args.sd15_model).resolve()),
-                 vae=str(Path(args.sdxl_vae).resolve()) if family == "sdxl" else None,
-                 prompt_dir=str(prompt_dir), work_root=str(dest/f"runtime_{family}"))
-        atomic_json(dest/f"{family}.json", c)
-        print(f"Prepared {family}: {dest/f'{family}.json'}")
+    c = json.loads(Path(__file__).with_name("ratiodiff_xl_h100_1gpu.json").read_text())
+    c.update(data_dir=str(Path(args.data_dir).resolve()), manifest=str(Path(args.manifest).resolve()),
+             model=str(Path(args.sdxl_model).resolve()), vae=str(Path(args.sdxl_vae).resolve()),
+             prompt_dir=str(prompt_dir), work_root=str(dest/"runtime_sdxl"))
+    atomic_json(dest/"sdxl.json", c)
+    print(f"Prepared SDXL: {dest/'sdxl.json'}")
 
 
 if __name__ == "__main__":

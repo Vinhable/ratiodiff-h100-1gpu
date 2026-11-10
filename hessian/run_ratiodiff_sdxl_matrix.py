@@ -98,7 +98,7 @@ def main(default_config="ratiodiff_xl_h100_1gpu.json"):
     print(json.dumps(dict(model_family=c["model_family"], variants=variants, pairs=c["samples"], epochs=c["epochs"],
         optimizer_steps_per_run=steps, gpus=gpus, micro_batch=c["micro_batch"],
         accumulation=accumulation, effective_batch=c["effective_batch"],
-        winner_auxiliary=c["loss"].get("winner_enabled", False), calibration_window=[c["calibration_start"], c["calibration_end"]],
+        calibration_window=[c["calibration_start"], c["calibration_end"]],
         phases=["unit tests", "local asset preflight", f"{len(variants)} x 8-step pilots + infer + five metrics",
                 f"{len(variants)} fresh full-budget runs + infer + five metrics", "comparison + compact archive"],
         mode="EXECUTE" if args.execute else "PLAN ONLY; no GPU accessed",
